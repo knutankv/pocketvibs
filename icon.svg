@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141b2a"/>
+      <stop offset="1" stop-color="#07090d"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="196" y1="0" x2="316" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff6b81"/>
+      <stop offset=".35" stop-color="#ffc145"/>
+      <stop offset=".65" stop-color="#3ee08f"/>
+      <stop offset="1" stop-color="#5aa9ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="176" y="96" width="160" height="320" rx="34" stroke="#eef1f6" stroke-width="14"/>
+    <path d="M236 128h40" stroke="#eef1f6" stroke-width="10" opacity=".5"/>
+    <path d="M196 256Q202 116 208 256Q214 376 220 256Q226 156 232 256Q238 336 244 256Q250 192 256 256Q262 304 268 256Q274 220 280 256Q286 280 292 256Q298 240 304 256Q310 264 316 256" stroke="url(#wave)" stroke-width="11"/>
+    <g stroke="#5aa9ff" stroke-width="14">
+      <path d="M140 206Q118 256 140 306M372 206Q394 256 372 306"/>
+      <path d="M102 172Q66 256 102 340M410 172Q446 256 410 340" opacity=".45"/>
+    </g>
+  </g>
+</svg>
