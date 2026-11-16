@@ -44,6 +44,7 @@ main{max-width:720px;margin:0 auto;padding:12px 16px calc(env(safe-area-inset-bo
 .card h2{margin:0 0 10px;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
   display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:28px}
 canvas{display:block;width:100%;touch-action:pan-y}
+.cv-time,.cv-psd,.cv-spec,.cv-small{cursor:crosshair;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .cv-time{height:190px}.cv-psd{height:240px}.cv-spec{height:210px}.cv-small{height:150px}
 .recrow{display:flex;align-items:center;gap:16px}
 .recbtn{flex:none;width:66px;height:66px;border-radius:50%;border:3px solid rgba(255,255,255,.88);background:transparent;position:relative;padding:0;cursor:pointer}
@@ -319,6 +320,7 @@ details p,details li{line-height:1.55}
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const G0 = 9.80665, R2D = 180 / Math.PI, D2R = Math.PI / 180;
 const COL = { x:'#ff6b81', y:'#3ee08f', z:'#5aa9ff', m:'#ffc145', a:'#c792ff' };
+const CHN = { x:'X', y:'Y', z:'Z', m:'|a|' };
 const GRID = 'rgba(255,255,255,.07)', FRAME = 'rgba(255,255,255,.12)', MUTED = '#8a93a6';
 const clamp = (v, a=-1, b=1) => Math.min(b, Math.max(a, v));
 let toastT;
@@ -434,7 +436,7 @@ function logTicks(e0, e1){
   return out;
 }
 function plot(cv, o){
-  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H);
+  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H); cv._view=null;
   const L=o.padL??48, R=10, T=8, B=22, pw=W-L-R, ph=H-T-B; if (pw<20||ph<20) return;
   const lx=!!o.logX, ly=!!o.logY, fx=lx?Math.log10:v=>v, fy=ly?Math.log10:v=>v;
   ctx.font='500 10px -apple-system,system-ui,sans-serif';
@@ -482,6 +484,20 @@ function plot(cv, o){
   ctx.fillStyle=MUTED;
   if (o.ylabel){ ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText(o.ylabel,L+6,T+5); }
   if (o.xlabel){ ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText(o.xlabel,L+pw-6,T+ph-4); }
+  finishPlot(cv,{ L, T, pw, ph, probe(px){
+    const X=X0+(px-L)/pw*(X1-X0), xq=lx?10**X:X, rows=[], dots=[]; let snap=null;
+    for (const s of o.series){
+      const i0=s.i0||0, i1=s.i1??s.y.length; if (i1<=i0) continue;
+      let i;
+      if (s.x){ const off=s.xoff||0; i=Math.min(i1-1, bsearch(s.x, xq+off, i0, i1));
+        if (i>i0 && Math.abs(fx(s.x[i-1]-off)-X)<Math.abs(fx(s.x[i]-off)-X)) i--; }
+      else i=clamp(Math.round(xq/(s.dx||1)), i0, i1-1);
+      const [xv,yv]=pt(s,i); if (snap==null) snap=xv;
+      rows.push({ color:s.color, text:(s.name?s.name+'  ':'')+fmtc(yv)+(o.ylabel?' '+o.ylabel:'') });
+      if (Number.isFinite(yv) && !(ly&&!(yv>0))) dots.push([PX(xv),PY(yv),s.color]);
+    }
+    return snap==null?null:{ px:PX(snap), title:fmtc(snap)+(o.xlabel?' '+o.xlabel:''), rows, dots };
+  } });
 }
 const CMAP=(()=>{ const st=[[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[250,193,39],[252,255,164]];
   const lut=new Uint8ClampedArray(256*3);
@@ -489,7 +505,7 @@ const CMAP=(()=>{ const st=[[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,
     for (let c=0;c<3;c++) lut[i*3+c]=st[k][c]+(st[k+1][c]-st[k][c])*f; }
   return lut; })();
 function heat(cv, sp, range=60){
-  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H);
+  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H); cv._view=null;
   const L=48, R=10, T=8, B=22, pw=W-L-R, ph=H-T-B;
   ctx.font='500 10px -apple-system,system-ui,sans-serif';
   if (!sp){ ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1); ctx.fillStyle=MUTED; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -508,7 +524,78 @@ function heat(cv, sp, range=60){
   for (const v of niceTicks(0,fMax,4)){ const p=T+ph-v/fMax*ph; ctx.fillText(fmt(v),L-6,p); }
   ctx.fillStyle='rgba(255,255,255,.75)'; ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText('Hz',L+6,T+5);
   ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText('s',L+pw-6,T+ph-4);
+  finishPlot(cv,{ L, T, pw, ph, probe(px){
+    const t=clamp((px-L)/pw,0,1)*tEnd, c=Math.min(cols-1,Math.floor(t/tEnd*cols)); let br=1;
+    for (let r=2;r<rows;r++) if (S[c*rows+r]>S[c*rows+br]) br=r;
+    return { px, title:fmtc(t)+' s', rows:[{ color:'#fcffa4', text:'peak '+fmtc(br/(rows-1)*fMax)+' Hz · '+S[c*rows+br].toFixed(1)+' dB' }],
+      dots:[[px, T+ph-br/(rows-1)*ph, '#fcffa4']] };
+  } });
 }
+
+/* ---------------- data cursor (vertical line to browse plotted data) ---------------- */
+function fmtc(v){ if (!Number.isFinite(v)) return '—'; const a=Math.abs(v); return a!==0&&(a>=1e5||a<1e-3)?v.toExponential(3):String(+v.toPrecision(4)); }
+function bsearch(arr, v, lo, hi){ while (lo<hi){ const m=(lo+hi)>>1; if (arr[m]<v) lo=m+1; else hi=m; } return lo; }
+function finishPlot(cv, view){
+  cv._view=view;
+  const bg=cv._bg||(cv._bg=document.createElement('canvas'));
+  if (bg.width!==cv.width || bg.height!==cv.height){ bg.width=cv.width; bg.height=cv.height; }
+  const b=bg.getContext('2d'); b.clearRect(0,0,bg.width,bg.height); b.drawImage(cv,0,0);
+  if (cv._cur) drawCursor(cv);
+}
+function repaintCursor(cv){
+  if (!cv._view || !cv._bg) return;
+  const ctx=cv.getContext('2d'), dpr=window.devicePixelRatio||1;
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height); ctx.drawImage(cv._bg,0,0);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  if (cv._cur) drawCursor(cv);
+}
+function drawCursor(cv){
+  const v=cv._view, ctx=cv.getContext('2d'), r=v.probe(v.L+cv._cur.u*v.pw); if (!r) return;
+  const { L, T, pw, ph }=v, x=Math.round(clamp(r.px,L,L+pw))+.5;
+  ctx.save(); ctx.beginPath(); ctx.rect(L,T,pw,ph); ctx.clip();
+  ctx.strokeStyle='rgba(238,241,246,.7)'; ctx.lineWidth=1; ctx.setLineDash(cv._cur.pin?[]:[3,3]);
+  ctx.beginPath(); ctx.moveTo(x,T); ctx.lineTo(x,T+ph); ctx.stroke(); ctx.setLineDash([]);
+  for (const [dx,dy,c] of r.dots){ ctx.fillStyle=c; ctx.strokeStyle='#07090d'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(dx,clamp(dy,T,T+ph),3.5,0,7); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+  ctx.font='600 11px -apple-system,system-ui,sans-serif';
+  const lines=[r.title,...r.rows.map(o=>o.text)], lh=15, pad=7, sw=r.rows.length?12:0;
+  const bw=Math.ceil(Math.max(...lines.map((s,i)=>ctx.measureText(s).width+(i?sw:0))))+pad*2, bh=lines.length*lh+pad*2-3;
+  let bx=x+8; if (bx+bw>L+pw) bx=x-8-bw; bx=Math.max(L,bx);
+  const by=T+4;
+  ctx.fillStyle='rgba(10,13,20,.88)'; ctx.strokeStyle='rgba(255,255,255,.16)'; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(bx+.5,by+.5,bw,bh,8); else ctx.rect(bx+.5,by+.5,bw,bh);
+  ctx.fill(); ctx.stroke();
+  ctx.textAlign='left'; ctx.textBaseline='top';
+  ctx.fillStyle='#eef1f6'; ctx.fillText(r.title,bx+pad,by+pad);
+  r.rows.forEach((o,i)=>{ const y=by+pad+(i+1)*lh;
+    ctx.fillStyle=o.color; ctx.fillRect(bx+pad,y+3,7,7);
+    ctx.fillStyle='#eef1f6'; ctx.fillText(o.text,bx+pad+sw,y); });
+}
+// Drag/tap (touch) or hover/click (mouse). A tap or click on a pinned line removes it.
+function attachCursor(cv){
+  let down=null, prev=null;
+  const pos=e=>{ const v=cv._view; if (!v) return null; const b=cv.getBoundingClientRect(); return clamp((e.clientX-b.left-v.L)/v.pw,0,1); };
+  const set=c=>{ cv._cur=c; repaintCursor(cv); };
+  cv.addEventListener('pointerdown',e=>{
+    if (e.button>0) return; const u=pos(e); if (u==null) return;
+    prev=cv._cur; down={ x:e.clientX, moved:false };
+    try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+    set({ u, pin:true });
+  });
+  cv.addEventListener('pointermove',e=>{
+    if (down){ if (Math.abs(e.clientX-down.x)>6) down.moved=true; const u=pos(e); if (u!=null) set({ u, pin:true }); }
+    else if (e.pointerType==='mouse' && !(cv._cur&&cv._cur.pin)){ const u=pos(e); set(u==null?null:{ u, pin:false }); }
+  });
+  cv.addEventListener('pointerup',e=>{
+    if (!down) return;
+    if (!down.moved && prev && prev.pin && cv._view && Math.abs((cv._cur.u-prev.u)*cv._view.pw)<14)
+      set(e.pointerType==='mouse'?{ u:cv._cur.u, pin:false }:null);
+    down=null;
+  });
+  cv.addEventListener('pointercancel',()=>{ if (down){ down=null; set(prev); } }); // page scroll took over
+  cv.addEventListener('pointerleave',e=>{ if (!down && e.pointerType==='mouse' && cv._cur && !cv._cur.pin) set(null); });
+}
+$$('canvas.cv-time, canvas.cv-psd, canvas.cv-spec, canvas.cv-small').forEach(attachCursor);
 
 /* ---------------- sensors ---------------- */
 const live={ a:[NaN,NaN,NaN], g:[NaN,NaN,NaN], beta:NaN, gamma:NaN, alpha:NaN, hasOri:false, ev:0, lastEv:0, rate:0, on:false };
@@ -626,13 +713,13 @@ function drawAccelTime(){
   let i0=0;
   if (n && aSpan()!=='all'){ const tmin=A.t[n-1]-(+aSpan()); let lo=0, hi=n-1; while(lo<hi){ const mid=(lo+hi)>>1; if (A.t[mid]<tmin) lo=mid+1; else hi=mid; } i0=lo; }
   const xoff=n?A.t[0]:0;
-  plot($('#a-time'),{ series:chans.map(c=>({ x:A.t, y:src[c], i0, i1:n, xoff, k, color:COL[c] })),
+  plot($('#a-time'),{ series:chans.map(c=>({ x:A.t, y:src[c], i0, i1:n, xoff, k, color:COL[c], name:CHN[c] })),
     ylabel:unitName(), xlabel:'s', empty:A.rec?'Waiting for samples…':'No data yet' });
 }
 function drawAccelPSD(){
   const r=A.res, chans=aChans();
   const u=unitName(), dens=r?r.p.scaling==='density':true, uu=u==='g'?'g²':'(m/s²)²';
-  plot($('#a-psd'),{ series:r?chans.filter(c=>r.P[c]).map(c=>({ x:r.f, y:r.P[c], color:COL[c] })):[],
+  plot($('#a-psd'),{ series:r?chans.filter(c=>r.P[c]).map(c=>({ x:r.f, y:r.P[c], color:COL[c], name:CHN[c] })):[],
     logY:$('#a-ylog').value==='log', logX:aXlog()==='log', ylabel:dens?uu+'/Hz':uu, xlabel:'Hz',
     empty:A.rec?'Collecting…':'Record to compute the PSD' });
   if (!r){ $('#a-meta').textContent=A.rec?'Collecting… PSD updates every second.':'Record something to compute the PSD.'; $('#a-stats').innerHTML=''; return; }
@@ -712,7 +799,7 @@ function drawTiltReadouts(o){
 }
 function drawTiltTrace(){
   const n=T.t.length, xoff=n?T.t[0]:0;
-  plot($('#t-trace'),{ series:[{x:T.t,y:T.beta,xoff,color:COL.x},{x:T.t,y:T.gamma,xoff,color:COL.y},{x:T.t,y:T.total,xoff,color:COL.m}],
+  plot($('#t-trace'),{ series:[{x:T.t,y:T.beta,xoff,color:COL.x,name:'Pitch'},{x:T.t,y:T.gamma,xoff,color:COL.y,name:'Roll'},{x:T.t,y:T.total,xoff,color:COL.m,name:'Total'}],
     ylabel:'deg', xlabel:'s', empty:T.rec?'Waiting for samples…':'Press record to log tilt' });
 }
 $('#t-csv').onclick=()=>{
