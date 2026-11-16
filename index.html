@@ -208,7 +208,7 @@ details p,details li{line-height:1.55}
           <li>iOS Safari gives motion data at about 60 Hz, so the Nyquist limit is about 30 Hz. The timestamps are uneven, so the data is resampled onto an even grid at the measured mean rate before the PSD is computed.</li>
           <li>The PSD matches <code>scipy.signal.welch</code>: periodic window and one-sided spectrum. Density gives units²/Hz and spectrum gives units².</li>
           <li><b>Peak</b> marks the largest spectral value of each channel (DC excluded) within the visible frequency range.</li>
-          <li>Zoom the x-axis of any plot with a two-finger pinch, or with the mouse wheel. Double-tap or tap <b>Reset zoom</b> to go back.</li>
+          <li>Zoom the x-axis of any plot with a two-finger pinch, or with the mouse wheel. On the spectrogram, a vertical pinch zooms the frequency axis. With a mouse, scroll over the frequency labels or hold Alt while scrolling. Double-tap or tap <b>Reset zoom</b> to go back.</li>
         </ul>
       </details>
     </div>
@@ -573,22 +573,26 @@ function heat(cv, sp, range=60){
     const u=clamp((S[c*rows+r]-vmin)/range,0,1), li=Math.round(u*255)*3, idx=((rows-1-r)*cols+c)*4;
     d[idx]=CMAP[li]; d[idx+1]=CMAP[li+1]; d[idx+2]=CMAP[li+2]; d[idx+3]=255; }
   oc.putImageData(img,0,0); ctx.imageSmoothingEnabled=true;
-  let X0=0, X1=tEnd, zoomed=false; const z=cv._zoom;
+  let X0=0, X1=tEnd, Y0=0, Y1=fMax, zoomed=false; const z=cv._zoom, zy=cv._yzoom;
   if (z && !z.lx){ const a=Math.max(0,z.a), b=Math.min(tEnd,z.b); if (b-a>1e-9 && (a>0||b<tEnd)){ X0=a; X1=b; zoomed=true; } }
-  ctx.drawImage(off,X0/tEnd*cols,0,(X1-X0)/tEnd*cols,rows,L,T,pw,ph);
+  if (zy){ const a=Math.max(0,zy.a), b=Math.min(fMax,zy.b); if (b-a>1e-9 && (a>0||b<fMax)){ Y0=a; Y1=b; zoomed=true; } }
+  ctx.drawImage(off,X0/tEnd*cols,(1-Y1/fMax)*rows,(X1-X0)/tEnd*cols,(Y1-Y0)/fMax*rows,L,T,pw,ph);
   ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1); ctx.fillStyle=MUTED;
   ctx.textAlign='center'; ctx.textBaseline='top';
   for (const v of niceTicks(X0,X1,Math.max(3,Math.floor(pw/70)))){ const p=L+(v-X0)/(X1-X0)*pw; if (p<L-1||p>L+pw+1) continue; ctx.fillText(fmt(v),p,T+ph+6); }
   ctx.textAlign='right'; ctx.textBaseline='middle';
-  for (const v of niceTicks(0,fMax,4)){ const p=T+ph-v/fMax*ph; ctx.fillText(fmt(v),L-6,p); }
+  for (const v of niceTicks(Y0,Y1,4)){ const p=T+ph-(v-Y0)/(Y1-Y0)*ph; if (p<T-1||p>T+ph+1) continue; ctx.fillText(fmt(v),L-6,p); }
   ctx.fillStyle='rgba(255,255,255,.75)'; ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText('Hz',L+6,T+5);
   ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText('s',L+pw-6,T+ph-4);
   const reset=zoomed?drawZoomBadge(ctx,L,T,pw):null;
-  finishPlot(cv,{ L, T, pw, ph, lx:false, dom:[X0,X1], full:[0,tEnd], reset, probe(px){
-    const t=X0+clamp((px-L)/pw,0,1)*(X1-X0), c=Math.min(cols-1,Math.floor(t/tEnd*cols)); let br=1;
-    for (let r=2;r<rows;r++) if (S[c*rows+r]>S[c*rows+br]) br=r;
-    return { px, title:fmtc(t)+' s', rows:[{ color:'#fcffa4', text:'peak '+fmtc(br/(rows-1)*fMax)+' Hz · '+S[c*rows+br].toFixed(1)+' dB' }],
-      dots:[[px, T+ph-br/(rows-1)*ph, '#fcffa4']] };
+  finishPlot(cv,{ L, T, pw, ph, lx:false, dom:[X0,X1], full:[0,tEnd], ydom:[Y0,Y1], yfull:[0,fMax], reset, probe(px){
+    const t=X0+clamp((px-L)/pw,0,1)*(X1-X0), c=Math.min(cols-1,Math.floor(t/tEnd*cols));
+    // peak within the visible frequency band (DC excluded)
+    const r0=Math.max(1,Math.ceil(Y0/fMax*(rows-1))), r1=Math.min(rows-1,Math.floor(Y1/fMax*(rows-1)));
+    let br=r0; for (let r=r0+1;r<=r1;r++) if (S[c*rows+r]>S[c*rows+br]) br=r;
+    const fb=br/(rows-1)*fMax;
+    return { px, title:fmtc(t)+' s', rows:[{ color:'#fcffa4', text:'peak '+fmtc(fb)+' Hz · '+S[c*rows+br].toFixed(1)+' dB' }],
+      dots:[[px, T+ph-(fb-Y0)/(Y1-Y0)*ph, '#fcffa4']] };
   } });
 }
 
@@ -632,33 +636,44 @@ function drawCursor(cv){
     ctx.fillStyle='#eef1f6'; ctx.fillText(o.text,bx+pad+sw,y); });
 }
 // Drag/tap (touch) or hover/click (mouse). A tap or click on a pinned line removes it.
-// Zoom (x-axis): two-finger pinch/pan, mouse wheel (horizontal wheel pans); double-tap or the badge resets.
-function setZoom(cv, a, b){
-  const v=cv._view; if (!v || !v.full) return;
-  const [F0,F1]=v.full, span=F1-F0; let w=b-a;
-  if (!(w>0) || w>=span*0.999) cv._zoom=null;
+// Zoom: two-finger pinch/pan (fingers spread horizontally → x, vertically → y where the plot supports it),
+// mouse wheel (horizontal wheel pans; over the y-axis labels or with Alt it zooms y); double-tap or the badge resets.
+function setZoom(cv, a, b, axis='x', redraw=true){
+  const v=cv._view, full=v&&(axis==='y'?v.yfull:v.full), key=axis==='y'?'_yzoom':'_zoom'; if (!full) return;
+  const [F0,F1]=full, span=F1-F0; let w=b-a;
+  if (!(w>0) || w>=span*0.999) cv[key]=null;
   else {
     const minW=span*2e-4; if (w<minW){ const c=(a+b)/2; a=c-minW/2; b=c+minW/2; w=minW; }
     if (a<F0){ a=F0; b=F0+w; } if (b>F1){ b=F1; a=F1-w; }
-    cv._zoom={ lx:v.lx, a, b };
+    cv[key]={ lx:axis==='x'&&v.lx, a, b };
   }
-  if (cv._redraw) cv._redraw();
+  if (redraw && cv._redraw) cv._redraw();
 }
-function resetZoom(cv){ if (cv._zoom){ cv._zoom=null; if (cv._redraw) cv._redraw(); } }
+function resetZoom(cv){ if (cv._zoom||cv._yzoom){ cv._zoom=cv._yzoom=null; if (cv._redraw) cv._redraw(); } }
 function attachCursor(cv){
   let down=null, prev=null, pinch=null, lastTap=null;
   const pts=new Map();
   const pos=e=>{ const v=cv._view; if (!v) return null; const b=cv.getBoundingClientRect(); return clamp((e.clientX-b.left-v.L)/v.pw,0,1); };
   const rawU=x=>{ const v=cv._view, b=cv.getBoundingClientRect(); return (x-b.left-v.L)/v.pw; };
+  const rawV=y=>{ const v=cv._view, b=cv.getBoundingClientRect(); return 1-(y-b.top-v.T)/v.ph; }; // 0 = bottom, 1 = top
   const set=c=>{ cv._cur=c; repaintCursor(cv); };
   const onBadge=e=>{ const r=cv._view&&cv._view.reset; if (!r) return false; const b=cv.getBoundingClientRect(), x=e.clientX-b.left, y=e.clientY-b.top;
     return x>=r.x-6 && x<=r.x+r.w+6 && y>=r.y-6 && y<=r.y+r.h+6; };
-  const startPinch=()=>{ const v=cv._view; if (!v || !v.dom) return; const [p1,p2]=[...pts.entries()], d=v.dom, D=u=>d[0]+u*(d[1]-d[0]);
-    pinch={ id1:p1[0], id2:p2[0], d1:D(rawU(p1[1])), d2:D(rawU(p2[1])) }; };
+  const startPinch=()=>{ const v=cv._view; if (!v || !(v.dom||v.ydom)) return; const [[id1,p1],[id2,p2]]=[...pts.entries()];
+    const sx=Math.abs(p2.x-p1.x), sy=Math.abs(p2.y-p1.y);
+    let zx=!!v.dom && sx>=40, zy=!!v.ydom && sy>=40;
+    if (!zx && !zy){ if (v.ydom && (sy>sx || !v.dom)) zy=true; else zx=true; }
+    pinch={ id1, id2 };
+    if (zx){ const d=v.dom, D=u=>d[0]+u*(d[1]-d[0]); pinch.x={ d1:D(rawU(p1.x)), d2:D(rawU(p2.x)) }; }
+    if (zy){ const d=v.ydom, D=u=>d[0]+u*(d[1]-d[0]); pinch.y={ d1:D(rawV(p1.y)), d2:D(rawV(p2.y)) }; } };
+  const pinchAxis=(ax, u1, u2)=>{ if (Math.abs(u2-u1)<0.03) return false;
+    const w=(ax.d2-ax.d1)/(u2-u1); if (!(w>0)) return false; ax.a=ax.d1-u1*w; ax.b=ax.a+w; return true; };
+  // keep two-finger gestures from scrolling the page
+  cv.addEventListener('touchmove',e=>{ if (e.touches.length>1 && e.cancelable) e.preventDefault(); }, { passive:false });
   cv.addEventListener('pointerdown',e=>{
     if (e.button>0) return; if (!cv._view) return;
     if (onBadge(e)){ e.preventDefault(); resetZoom(cv); return; }
-    pts.set(e.pointerId, e.clientX);
+    pts.set(e.pointerId, { x:e.clientX, y:e.clientY });
     try{ cv.setPointerCapture(e.pointerId); }catch(_){}
     if (pts.size===2){ if (down){ down=null; set(prev); } startPinch(); return; }
     if (pts.size>2) return;
@@ -667,13 +682,14 @@ function attachCursor(cv){
     set({ u, pin:true });
   });
   cv.addEventListener('pointermove',e=>{
-    if (pts.has(e.pointerId)) pts.set(e.pointerId, e.clientX);
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, { x:e.clientX, y:e.clientY });
     if (pinch){
       if (!pts.has(pinch.id1) || !pts.has(pinch.id2)) return;
-      const u1=rawU(pts.get(pinch.id1)), u2=rawU(pts.get(pinch.id2));
-      if (Math.abs(u2-u1)<0.03) return;
-      const w=(pinch.d2-pinch.d1)/(u2-u1); if (!(w>0)) return;
-      const a=pinch.d1-u1*w; setZoom(cv, a, a+w); return;
+      const p1=pts.get(pinch.id1), p2=pts.get(pinch.id2);
+      const ox=pinch.x && pinchAxis(pinch.x, rawU(p1.x), rawU(p2.x)), oy=pinch.y && pinchAxis(pinch.y, rawV(p1.y), rawV(p2.y));
+      if (ox) setZoom(cv, pinch.x.a, pinch.x.b, 'x', !oy);
+      if (oy) setZoom(cv, pinch.y.a, pinch.y.b, 'y');
+      return;
     }
     if (down){ if (Math.abs(e.clientX-down.x)>6) down.moved=true; const u=pos(e); if (u!=null) set({ u, pin:true }); }
     else if (e.pointerType==='mouse' && !(cv._cur&&cv._cur.pin)){ const u=pos(e); set(u==null?null:{ u, pin:false }); }
@@ -683,7 +699,7 @@ function attachCursor(cv){
     if (end(e) || !down) return;
     if (!down.moved){
       const now=performance.now();
-      if (e.pointerType!=='mouse' && lastTap && now-lastTap.t<350 && Math.hypot(e.clientX-lastTap.x,e.clientY-lastTap.y)<30 && cv._zoom){
+      if (e.pointerType!=='mouse' && lastTap && now-lastTap.t<350 && Math.hypot(e.clientX-lastTap.x,e.clientY-lastTap.y)<30 && (cv._zoom||cv._yzoom)){
         lastTap=null; down=null; set(null); resetZoom(cv); return; }
       lastTap={ t:now, x:e.clientX, y:e.clientY };
     }
@@ -695,9 +711,14 @@ function attachCursor(cv){
   cv.addEventListener('pointerleave',e=>{ if (!down && e.pointerType==='mouse' && cv._cur && !cv._cur.pin) set(null); });
   cv.addEventListener('dblclick',()=>resetZoom(cv));
   cv.addEventListener('wheel',e=>{
-    const v=cv._view; if (!v || !v.dom) return; const u=rawU(e.clientX); if (u<0 || u>1) return;
+    const v=cv._view; if (!v) return; const u=rawU(e.clientX), yv=rawV(e.clientY);
+    const k=e.deltaMode===1?16:1, dx=e.deltaX*k, dy=e.deltaY*k;
+    if (v.ydom && (e.altKey || u<0) && yv>=0 && yv<=1){
+      e.preventDefault();
+      const [a,b]=v.ydom, w=b-a, f=Math.exp(dy*0.002), c=a+yv*w; setZoom(cv, c-yv*w*f, c+(1-yv)*w*f, 'y'); return; }
+    if (!v.dom || u<0 || u>1) return;
     e.preventDefault();
-    const [a,b]=v.dom, w=b-a, k=e.deltaMode===1?16:1, dx=e.deltaX*k, dy=e.deltaY*k;
+    const [a,b]=v.dom, w=b-a;
     if (Math.abs(dx)>Math.abs(dy)){ const s=dx/v.pw*w; setZoom(cv, a+s, b+s); return; }
     const f=Math.exp(dy*0.002), c=a+u*w; setZoom(cv, c-u*w*f, c+(1-u)*w*f);
   }, { passive:false });
@@ -798,7 +819,7 @@ $('#a-rec').onclick=async()=>{
   if (!await ensureSensors()) return;
   for (const k of ['t','ax','ay','az','am','gx','gy','gz','gm','ra','rb','rg']) A[k]=[];
   A.res=null; A.rec=true; A.start=performance.now(); A.iso=new Date().toISOString();
-  ['#a-time','#a-psd','#a-spec'].forEach(s=>$(s)._zoom=null);
+  ['#a-time','#a-psd','#a-spec'].forEach(s=>$(s)._zoom=$(s)._yzoom=null);
   $('#a-rec').classList.add('on'); updateWake();
 };
 
@@ -941,7 +962,7 @@ $('#m-rec').onclick=async()=>{
   M.tbuf=new Float32Array(M.an.fftSize); M.fbuf=new Float32Array(M.an.frequencyBinCount);
   M.proc=M.ctx.createScriptProcessor(4096,1,1);
   M.chunks=[]; M.levels=[]; M.data=null; M.psd=null; M.spec=null; M.iso=new Date().toISOString();
-  micCanvases().forEach(c=>c._zoom=null);
+  micCanvases().forEach(c=>c._zoom=c._yzoom=null);
   let samples=0;
   M.proc.onaudioprocess=e=>{ if (!M.rec) return; const d=e.inputBuffer.getChannelData(0); M.chunks.push(new Float32Array(d));
     let ss=0, pk=0; for (let i=0;i<d.length;i++){ const v=d[i]; ss+=v*v; const a=v<0?-v:v; if (a>pk) pk=a; }
@@ -958,7 +979,7 @@ function stopMic(){
   M.stream?.getTracks().forEach(t=>t.stop()); M.ctx?.close(); M.ctx=null;
   let len=0; for (const c of M.chunks) len+=c.length;
   const out=new Float32Array(len); let o=0; for (const c of M.chunks){ out.set(c,o); o+=c.length; }
-  M.data=out; M.chunks=[]; micCanvases().forEach(c=>c._zoom=null); updateWake();
+  M.data=out; M.chunks=[]; micCanvases().forEach(c=>c._zoom=c._yzoom=null); updateWake();
   $('#m-info').textContent=`${(len/M.fs).toFixed(1)} s · ${M.fs} Hz · computing…`;
   $('#m-wavetitle').textContent='Waveform · recording'; $('#m-spectitle').textContent='Power spectral density · Welch';
   setTimeout(()=>{ computeMic(); drawMicStatic(); $('#m-info').textContent=`${(len/M.fs).toFixed(1)} s · ${M.fs} Hz · ${len.toLocaleString()} samples`; }, 30);
