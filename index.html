@@ -170,7 +170,10 @@ details p,details li{line-height:1.55}
 
     <div class="card">
       <h2>Power spectral density · Welch
-        <span class="seg" id="a-xlog"><button data-v="lin" class="on">Lin f</button><button data-v="log">Log f</button></span>
+        <span class="row" style="gap:6px">
+          <span class="seg"><button id="a-peak" aria-pressed="false">Peak</button></span>
+          <span class="seg" id="a-xlog"><button data-v="lin" class="on">Lin f</button><button data-v="log">Log f</button></span>
+        </span>
       </h2>
       <canvas class="cv-psd" id="a-psd"></canvas>
       <div class="params">
@@ -204,6 +207,8 @@ details p,details li{line-height:1.55}
           <li><b>Linear</b> is <code>acceleration</code> with gravity removed by iOS. <b>+Gravity</b> is <code>accelerationIncludingGravity</code>. The raw CSV has both, plus the rotation rate in °/s.</li>
           <li>iOS Safari gives motion data at about 60 Hz, so the Nyquist limit is about 30 Hz. The timestamps are uneven, so the data is resampled onto an even grid at the measured mean rate before the PSD is computed.</li>
           <li>The PSD matches <code>scipy.signal.welch</code>: periodic window and one-sided spectrum. Density gives units²/Hz and spectrum gives units².</li>
+          <li><b>Peak</b> marks the largest spectral value of each channel (DC excluded) within the visible frequency range.</li>
+          <li>Zoom the x-axis of any plot with a two-finger pinch, or with the mouse wheel. Double-tap or tap <b>Reset zoom</b> to go back.</li>
         </ul>
       </details>
     </div>
@@ -273,7 +278,9 @@ details p,details li{line-height:1.55}
     </div>
 
     <div class="card">
-      <h2 id="m-spectitle">Live spectrum</h2>
+      <h2><span id="m-spectitle">Live spectrum</span>
+        <span class="seg"><button id="m-peak" aria-pressed="false">Peak</button></span>
+      </h2>
       <canvas class="cv-psd" id="m-psd"></canvas>
       <div class="params">
         <label>Segment (nperseg)<select id="m-nper"><option>256</option><option>512</option><option>1024</option><option>2048</option><option selected>4096</option><option>8192</option><option>16384</option><option>32768</option></select></label>
@@ -436,24 +443,39 @@ function logTicks(e0, e1){
   return out;
 }
 function plot(cv, o){
-  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H); cv._view=null;
+  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H); cv._view=null; cv._redraw=()=>plot(cv,o);
   const L=o.padL??48, R=10, T=8, B=22, pw=W-L-R, ph=H-T-B; if (pw<20||ph<20) return;
-  const lx=!!o.logX, ly=!!o.logY, fx=lx?Math.log10:v=>v, fy=ly?Math.log10:v=>v;
+  const lx=!!o.logX, ly=!!o.logY, fx=lx?Math.log10:v=>v, fy=ly?Math.log10:v=>v, inv=lx?v=>10**v:v=>v;
   ctx.font='500 10px -apple-system,system-ui,sans-serif';
   let x0=Infinity, x1=-Infinity, y0=Infinity, y1=-Infinity;
   const pt=(s,i)=>[s.x ? s.x[i]-(s.xoff||0) : i*(s.dx||1), s.y[i]*(s.k??1)];
+  const ok=(xv,yv)=>Number.isFinite(yv) && !(lx&&!(xv>0)) && !(ly&&!(yv>0));
   for (const s of o.series){ const i1=s.i1??s.y.length;
     for (let i=s.i0||0;i<i1;i++){ const [xv,yv]=pt(s,i);
-      if (!Number.isFinite(yv) || (lx&&!(xv>0)) || (ly&&!(yv>0))) continue;
+      if (!ok(xv,yv)) continue;
       if (xv<x0) x0=xv; if (xv>x1) x1=xv; if (yv<y0) y0=yv; if (yv>y1) y1=yv; } }
   if (o.xmin!=null) x0=o.xmin; if (o.xmax!=null) x1=o.xmax;
-  if (o.ymin!=null) y0=o.ymin; if (o.ymax!=null) y1=o.ymax;
   if (!(x1>=x0) || !(y1>=y0) || !Number.isFinite(x0+y0+x1+y1)){
     ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1);
     ctx.fillStyle=MUTED; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.font='500 13px -apple-system,system-ui';
     ctx.fillText(o.empty||'No data yet', L+pw/2, T+ph/2); return; }
-  let X0=fx(x0), X1=fx(x1), Y0=fy(y0), Y1=fy(y1);
+  let X0=fx(x0), X1=fx(x1);
   if (X1-X0<1e-12){ X0-=.5; X1+=.5; }
+  // x-zoom (stored in axis coordinates, i.e. log10(x) on log axes)
+  const F0=X0, F1=X1, z=cv._zoom; let zoomed=false;
+  if (z && z.lx===lx){ const a=Math.max(F0,z.a), b=Math.min(F1,z.b); if (b-a>1e-12 && (a>F0||b<F1)){ X0=a; X1=b; zoomed=true; } }
+  const rng=s=>{ let i0=s.i0||0, i1=s.i1??s.y.length;
+    if (zoomed){
+      if (s.x){ const off=s.xoff||0; i0=Math.max(i0,bsearch(s.x,inv(X0)+off,i0,i1)-1); i1=Math.min(i1,bsearch(s.x,inv(X1)+off,i0,i1)+1); }
+      else { const dx=s.dx||1; i0=Math.max(i0,Math.floor(inv(X0)/dx)); i1=Math.min(i1,Math.ceil(inv(X1)/dx)+1); } }
+    return [i0,i1]; };
+  if (zoomed){ let a=Infinity, b=-Infinity;
+    for (const s of o.series){ const [i0,i1]=rng(s);
+      for (let i=i0;i<i1;i++){ const [xv,yv]=pt(s,i); if (!ok(xv,yv)) continue; const X=fx(xv); if (X<X0||X>X1) continue;
+        if (yv<a) a=yv; if (yv>b) b=yv; } }
+    if (b>=a){ y0=a; y1=b; } }
+  if (o.ymin!=null) y0=o.ymin; if (o.ymax!=null) y1=o.ymax;
+  let Y0=fy(y0), Y1=fy(y1);
   if (Y1-Y0<1e-12){ const d=Math.abs(Y0)*.1||.5; Y0-=d; Y1+=d; }
   if (o.ymin==null && o.ymax==null){ const m=(Y1-Y0)*.07; Y0-=m; Y1+=m; }
   const PX=v=>L+(fx(v)-X0)/(X1-X0)*pw, PY=v=>T+ph-(fy(v)-Y0)/(Y1-Y0)*ph;
@@ -469,12 +491,12 @@ function plot(cv, o){
   ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1);
   ctx.save(); ctx.beginPath(); ctx.rect(L,T,pw,ph); ctx.clip(); ctx.lineJoin='round';
   for (const s of o.series){
-    const i0=s.i0||0, i1=s.i1??s.y.length, dense=!lx && (i1-i0)>pw*3;
+    const [i0,i1]=rng(s), dense=!lx && (i1-i0)>pw*3;
     ctx.strokeStyle=s.color; ctx.lineWidth=s.width||1.4; ctx.beginPath();
     let pen=false, bx=null, mn=0, mx=0;
     const flush=()=>{ const a=PY(mn), b=PY(mx); if (!pen){ ctx.moveTo(bx,a); pen=true; } else ctx.lineTo(bx,a); ctx.lineTo(bx,b); };
     for (let i=i0;i<i1;i++){ const [xv,yv]=pt(s,i);
-      if (!Number.isFinite(yv) || (lx&&!(xv>0)) || (ly&&!(yv>0))){ pen=false; continue; }
+      if (!ok(xv,yv)){ pen=false; continue; }
       if (dense){ const b=Math.round(PX(xv)); if (b!==bx){ if (bx!==null) flush(); bx=b; mn=mx=yv; } else { if (yv<mn) mn=yv; if (yv>mx) mx=yv; } }
       else { const X=PX(xv), Y=PY(yv); if (pen) ctx.lineTo(X,Y); else { ctx.moveTo(X,Y); pen=true; } } }
     if (dense && bx!==null) flush();
@@ -484,7 +506,10 @@ function plot(cv, o){
   ctx.fillStyle=MUTED;
   if (o.ylabel){ ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText(o.ylabel,L+6,T+5); }
   if (o.xlabel){ ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText(o.xlabel,L+pw-6,T+ph-4); }
-  finishPlot(cv,{ L, T, pw, ph, probe(px){
+  const reset=zoomed?drawZoomBadge(ctx,L,T,pw,false):null;
+  if (o.peak) drawPeaks(ctx, o, { L, T, pw, ph, X0, X1, fx, PX, PY, pt, ok, rng }, reset?[reset]:[]);
+  if (reset) drawZoomBadge(ctx,L,T,pw);
+  finishPlot(cv,{ L, T, pw, ph, lx, dom:[X0,X1], full:[F0,F1], reset, probe(px){
     const X=X0+(px-L)/pw*(X1-X0), xq=lx?10**X:X, rows=[], dots=[]; let snap=null;
     for (const s of o.series){
       const i0=s.i0||0, i1=s.i1??s.y.length; if (i1<=i0) continue;
@@ -499,13 +524,44 @@ function plot(cv, o){
     return snap==null?null:{ px:PX(snap), title:fmtc(snap)+(o.xlabel?' '+o.xlabel:''), rows, dots };
   } });
 }
+// Mark the largest value (excluding DC) of each series within the visible x-range.
+function drawPeaks(ctx, o, g, avoid){
+  const { L, T, pw, ph, X0, X1, fx, PX, PY, pt, ok, rng }=g, placed=[...avoid];
+  ctx.font='600 10.5px -apple-system,system-ui,sans-serif';
+  for (const s of o.series){
+    const [i0,i1]=rng(s); let bi=-1, by=-Infinity;
+    for (let i=i0;i<i1;i++){ const [xv,yv]=pt(s,i); if (!(xv>0) || !ok(xv,yv)) continue; const X=fx(xv); if (X<X0||X>X1) continue;
+      if (yv>by){ by=yv; bi=i; } }
+    if (bi<0) continue;
+    const [xv]=pt(s,bi), px=PX(xv), py=clamp(PY(by),T,T+ph);
+    ctx.fillStyle=s.color; ctx.strokeStyle='#07090d'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(px,py-3); ctx.lineTo(px-5,py-11); ctx.lineTo(px+5,py-11); ctx.closePath(); ctx.fill(); ctx.stroke();
+    const txt=(s.name?s.name+' ':'')+fmtc(xv)+(o.xlabel?' '+o.xlabel:''), w=ctx.measureText(txt).width+10, h=16;
+    let x=px+8; if (x+w>L+pw) x=px-8-w; x=Math.max(L+2,x);
+    let y=clamp(py-h-6,T+2,T+ph-h-2);
+    for (let k=0;k<8 && placed.some(r=>x<r.x+r.w && r.x<x+w && y<r.y+r.h && r.y<y+h);k++) y=Math.min(T+ph-h-2,y+h+2);
+    placed.push({ x, y, w, h });
+    ctx.fillStyle='rgba(10,13,20,.82)'; ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x,y,w,h,5); else ctx.rect(x,y,w,h); ctx.fill();
+    ctx.fillStyle=s.color; ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillText(txt,x+5,y+h/2+.5);
+  }
+}
+function drawZoomBadge(ctx, L, T, pw, draw=true){
+  ctx.font='600 10.5px -apple-system,system-ui,sans-serif';
+  const txt='↺ Reset zoom', w=ctx.measureText(txt).width+14, h=20, x=L+pw-w-4, y=T+4;
+  if (!draw) return { x, y, w, h };
+  ctx.fillStyle='rgba(90,169,255,.22)'; ctx.strokeStyle='rgba(90,169,255,.5)'; ctx.lineWidth=1; ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x+.5,y+.5,w,h,10); else ctx.rect(x+.5,y+.5,w,h); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#eef1f6'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(txt,x+w/2,y+h/2+1);
+  return { x, y, w, h };
+}
 const CMAP=(()=>{ const st=[[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[250,193,39],[252,255,164]];
   const lut=new Uint8ClampedArray(256*3);
   for (let i=0;i<256;i++){ const u=i/255*(st.length-1), k=Math.min(st.length-2,Math.floor(u)), f=u-k;
     for (let c=0;c<3;c++) lut[i*3+c]=st[k][c]+(st[k+1][c]-st[k][c])*f; }
   return lut; })();
 function heat(cv, sp, range=60){
-  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H); cv._view=null;
+  const { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H); cv._view=null; cv._redraw=()=>heat(cv,sp,range);
   const L=48, R=10, T=8, B=22, pw=W-L-R, ph=H-T-B;
   ctx.font='500 10px -apple-system,system-ui,sans-serif';
   if (!sp){ ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1); ctx.fillStyle=MUTED; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -516,16 +572,20 @@ function heat(cv, sp, range=60){
   for (let c=0;c<cols;c++) for (let r=0;r<rows;r++){
     const u=clamp((S[c*rows+r]-vmin)/range,0,1), li=Math.round(u*255)*3, idx=((rows-1-r)*cols+c)*4;
     d[idx]=CMAP[li]; d[idx+1]=CMAP[li+1]; d[idx+2]=CMAP[li+2]; d[idx+3]=255; }
-  oc.putImageData(img,0,0); ctx.imageSmoothingEnabled=true; ctx.drawImage(off,L,T,pw,ph);
+  oc.putImageData(img,0,0); ctx.imageSmoothingEnabled=true;
+  let X0=0, X1=tEnd, zoomed=false; const z=cv._zoom;
+  if (z && !z.lx){ const a=Math.max(0,z.a), b=Math.min(tEnd,z.b); if (b-a>1e-9 && (a>0||b<tEnd)){ X0=a; X1=b; zoomed=true; } }
+  ctx.drawImage(off,X0/tEnd*cols,0,(X1-X0)/tEnd*cols,rows,L,T,pw,ph);
   ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1); ctx.fillStyle=MUTED;
   ctx.textAlign='center'; ctx.textBaseline='top';
-  for (const v of niceTicks(0,tEnd,Math.max(3,Math.floor(pw/70)))){ const p=L+v/tEnd*pw; if (p>L+pw+1) continue; ctx.fillText(fmt(v),p,T+ph+6); }
+  for (const v of niceTicks(X0,X1,Math.max(3,Math.floor(pw/70)))){ const p=L+(v-X0)/(X1-X0)*pw; if (p<L-1||p>L+pw+1) continue; ctx.fillText(fmt(v),p,T+ph+6); }
   ctx.textAlign='right'; ctx.textBaseline='middle';
   for (const v of niceTicks(0,fMax,4)){ const p=T+ph-v/fMax*ph; ctx.fillText(fmt(v),L-6,p); }
   ctx.fillStyle='rgba(255,255,255,.75)'; ctx.textAlign='left'; ctx.textBaseline='top'; ctx.fillText('Hz',L+6,T+5);
   ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText('s',L+pw-6,T+ph-4);
-  finishPlot(cv,{ L, T, pw, ph, probe(px){
-    const t=clamp((px-L)/pw,0,1)*tEnd, c=Math.min(cols-1,Math.floor(t/tEnd*cols)); let br=1;
+  const reset=zoomed?drawZoomBadge(ctx,L,T,pw):null;
+  finishPlot(cv,{ L, T, pw, ph, lx:false, dom:[X0,X1], full:[0,tEnd], reset, probe(px){
+    const t=X0+clamp((px-L)/pw,0,1)*(X1-X0), c=Math.min(cols-1,Math.floor(t/tEnd*cols)); let br=1;
     for (let r=2;r<rows;r++) if (S[c*rows+r]>S[c*rows+br]) br=r;
     return { px, title:fmtc(t)+' s', rows:[{ color:'#fcffa4', text:'peak '+fmtc(br/(rows-1)*fMax)+' Hz · '+S[c*rows+br].toFixed(1)+' dB' }],
       dots:[[px, T+ph-br/(rows-1)*ph, '#fcffa4']] };
@@ -572,28 +632,75 @@ function drawCursor(cv){
     ctx.fillStyle='#eef1f6'; ctx.fillText(o.text,bx+pad+sw,y); });
 }
 // Drag/tap (touch) or hover/click (mouse). A tap or click on a pinned line removes it.
+// Zoom (x-axis): two-finger pinch/pan, mouse wheel (horizontal wheel pans); double-tap or the badge resets.
+function setZoom(cv, a, b){
+  const v=cv._view; if (!v || !v.full) return;
+  const [F0,F1]=v.full, span=F1-F0; let w=b-a;
+  if (!(w>0) || w>=span*0.999) cv._zoom=null;
+  else {
+    const minW=span*2e-4; if (w<minW){ const c=(a+b)/2; a=c-minW/2; b=c+minW/2; w=minW; }
+    if (a<F0){ a=F0; b=F0+w; } if (b>F1){ b=F1; a=F1-w; }
+    cv._zoom={ lx:v.lx, a, b };
+  }
+  if (cv._redraw) cv._redraw();
+}
+function resetZoom(cv){ if (cv._zoom){ cv._zoom=null; if (cv._redraw) cv._redraw(); } }
 function attachCursor(cv){
-  let down=null, prev=null;
+  let down=null, prev=null, pinch=null, lastTap=null;
+  const pts=new Map();
   const pos=e=>{ const v=cv._view; if (!v) return null; const b=cv.getBoundingClientRect(); return clamp((e.clientX-b.left-v.L)/v.pw,0,1); };
+  const rawU=x=>{ const v=cv._view, b=cv.getBoundingClientRect(); return (x-b.left-v.L)/v.pw; };
   const set=c=>{ cv._cur=c; repaintCursor(cv); };
+  const onBadge=e=>{ const r=cv._view&&cv._view.reset; if (!r) return false; const b=cv.getBoundingClientRect(), x=e.clientX-b.left, y=e.clientY-b.top;
+    return x>=r.x-6 && x<=r.x+r.w+6 && y>=r.y-6 && y<=r.y+r.h+6; };
+  const startPinch=()=>{ const v=cv._view; if (!v || !v.dom) return; const [p1,p2]=[...pts.entries()], d=v.dom, D=u=>d[0]+u*(d[1]-d[0]);
+    pinch={ id1:p1[0], id2:p2[0], d1:D(rawU(p1[1])), d2:D(rawU(p2[1])) }; };
   cv.addEventListener('pointerdown',e=>{
-    if (e.button>0) return; const u=pos(e); if (u==null) return;
-    prev=cv._cur; down={ x:e.clientX, moved:false };
+    if (e.button>0) return; if (!cv._view) return;
+    if (onBadge(e)){ e.preventDefault(); resetZoom(cv); return; }
+    pts.set(e.pointerId, e.clientX);
     try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+    if (pts.size===2){ if (down){ down=null; set(prev); } startPinch(); return; }
+    if (pts.size>2) return;
+    const u=pos(e); if (u==null) return;
+    prev=cv._cur; down={ x:e.clientX, y:e.clientY, moved:false };
     set({ u, pin:true });
   });
   cv.addEventListener('pointermove',e=>{
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, e.clientX);
+    if (pinch){
+      if (!pts.has(pinch.id1) || !pts.has(pinch.id2)) return;
+      const u1=rawU(pts.get(pinch.id1)), u2=rawU(pts.get(pinch.id2));
+      if (Math.abs(u2-u1)<0.03) return;
+      const w=(pinch.d2-pinch.d1)/(u2-u1); if (!(w>0)) return;
+      const a=pinch.d1-u1*w; setZoom(cv, a, a+w); return;
+    }
     if (down){ if (Math.abs(e.clientX-down.x)>6) down.moved=true; const u=pos(e); if (u!=null) set({ u, pin:true }); }
     else if (e.pointerType==='mouse' && !(cv._cur&&cv._cur.pin)){ const u=pos(e); set(u==null?null:{ u, pin:false }); }
   });
+  const end=e=>{ pts.delete(e.pointerId); if (pinch){ if (pts.size<2) pinch=null; return true; } return false; };
   cv.addEventListener('pointerup',e=>{
-    if (!down) return;
+    if (end(e) || !down) return;
+    if (!down.moved){
+      const now=performance.now();
+      if (e.pointerType!=='mouse' && lastTap && now-lastTap.t<350 && Math.hypot(e.clientX-lastTap.x,e.clientY-lastTap.y)<30 && cv._zoom){
+        lastTap=null; down=null; set(null); resetZoom(cv); return; }
+      lastTap={ t:now, x:e.clientX, y:e.clientY };
+    }
     if (!down.moved && prev && prev.pin && cv._view && Math.abs((cv._cur.u-prev.u)*cv._view.pw)<14)
       set(e.pointerType==='mouse'?{ u:cv._cur.u, pin:false }:null);
     down=null;
   });
-  cv.addEventListener('pointercancel',()=>{ if (down){ down=null; set(prev); } }); // page scroll took over
+  cv.addEventListener('pointercancel',e=>{ if (end(e)) return; if (down){ down=null; set(prev); } }); // page scroll took over
   cv.addEventListener('pointerleave',e=>{ if (!down && e.pointerType==='mouse' && cv._cur && !cv._cur.pin) set(null); });
+  cv.addEventListener('dblclick',()=>resetZoom(cv));
+  cv.addEventListener('wheel',e=>{
+    const v=cv._view; if (!v || !v.dom) return; const u=rawU(e.clientX); if (u<0 || u>1) return;
+    e.preventDefault();
+    const [a,b]=v.dom, w=b-a, k=e.deltaMode===1?16:1, dx=e.deltaX*k, dy=e.deltaY*k;
+    if (Math.abs(dx)>Math.abs(dy)){ const s=dx/v.pw*w; setZoom(cv, a+s, b+s); return; }
+    const f=Math.exp(dy*0.002), c=a+u*w; setZoom(cv, c-u*w*f, c+(1-u)*w*f);
+  }, { passive:false });
 }
 $$('canvas.cv-time, canvas.cv-psd, canvas.cv-spec, canvas.cv-small').forEach(attachCursor);
 
@@ -673,6 +780,10 @@ const aUnit=seg('a-unit',()=>{ computeAccel(); drawAccelAll(); });
 const aSpan=seg('a-span',()=>drawAccelTime());
 const aXlog=seg('a-xlog',()=>drawAccelPSD());
 const aSpch=seg('a-spch',()=>{ computeAccel(); drawAccelSpec(); });
+function toggle(id, cb){ const b=$('#'+id);
+  b.onclick=()=>{ const on=b.classList.toggle('on'); b.setAttribute('aria-pressed',on); cb(on); };
+  return ()=>b.classList.contains('on'); }
+const aPeak=toggle('a-peak',()=>drawAccelPSD());
 $('#a-chips').addEventListener('click',e=>{ const c=e.target.closest('.chip'); if(!c) return; c.classList.toggle('on'); drawAccelTime(); drawAccelPSD(); });
 const aChans=()=>$$('#a-chips .chip.on').map(c=>c.dataset.ch);
 const wparams=p=>({ nperseg:+$('#'+p+'-nper').value, overlap:+$('#'+p+'-ovl').value/100, window:$('#'+p+'-win').value, detrend:$('#'+p+'-det').value, scaling:$('#'+p+'-scl').value });
@@ -687,6 +798,7 @@ $('#a-rec').onclick=async()=>{
   if (!await ensureSensors()) return;
   for (const k of ['t','ax','ay','az','am','gx','gy','gz','gm','ra','rb','rg']) A[k]=[];
   A.res=null; A.rec=true; A.start=performance.now(); A.iso=new Date().toISOString();
+  ['#a-time','#a-psd','#a-spec'].forEach(s=>$(s)._zoom=null);
   $('#a-rec').classList.add('on'); updateWake();
 };
 
@@ -720,7 +832,7 @@ function drawAccelPSD(){
   const r=A.res, chans=aChans();
   const u=unitName(), dens=r?r.p.scaling==='density':true, uu=u==='g'?'g²':'(m/s²)²';
   plot($('#a-psd'),{ series:r?chans.filter(c=>r.P[c]).map(c=>({ x:r.f, y:r.P[c], color:COL[c], name:CHN[c] })):[],
-    logY:$('#a-ylog').value==='log', logX:aXlog()==='log', ylabel:dens?uu+'/Hz':uu, xlabel:'Hz',
+    logY:$('#a-ylog').value==='log', logX:aXlog()==='log', peak:aPeak(), ylabel:dens?uu+'/Hz':uu, xlabel:'Hz',
     empty:A.rec?'Collecting…':'Record to compute the PSD' });
   if (!r){ $('#a-meta').textContent=A.rec?'Collecting… PSD updates every second.':'Record something to compute the PSD.'; $('#a-stats').innerHTML=''; return; }
   $('#a-meta').innerHTML=`fs <b>${r.fs.toFixed(2)} Hz</b> · Nyquist ${(r.fs/2).toFixed(1)} Hz · nperseg ${r.N} · Δf <b>${r.df.toPrecision(3)} Hz</b> · averages K=${r.K} · ${r.n} resampled pts`+
@@ -766,7 +878,7 @@ $('#t-rec').onclick=async()=>{
     $('#t-info').textContent=`${T.t.length} samples recorded`; return; }
   if (!await ensureSensors()) return;
   for (const k of ['t','beta','gamma','alpha','total','pg','rg','tg']) T[k]=[];
-  T.rec=true; T.start=performance.now(); $('#t-rec').classList.add('on'); updateWake();
+  T.rec=true; T.start=performance.now(); $('#t-trace')._zoom=null; $('#t-rec').classList.add('on'); updateWake();
 };
 function drawBubble(){
   const cv=$('#t-bubble'), { ctx, W, H }=setupCanvas(cv); ctx.clearRect(0,0,W,H);
@@ -814,6 +926,8 @@ $('#t-csv').onclick=()=>{
 const M={ ctx:null, stream:null, src:null, proc:null, an:null, rec:false, chunks:[], fs:48000, levels:[], start:0, data:null, psd:null, spec:null, iso:'', tbuf:null, fbuf:null, db:-Infinity };
 ['nper','ovl','win','det','scl'].forEach(k=>$('#m-'+k).addEventListener('change',()=>{ if(!M.rec){ computeMic(); drawMicStatic(); } }));
 $('#m-xlog').addEventListener('change',()=>{ if(!M.rec) drawMicStatic(); });
+const mPeak=toggle('m-peak',()=>{ if(!M.rec) drawMicStatic(); });
+const micCanvases=()=>['#m-wave','#m-psd','#m-spec'].map(s=>$(s));
 
 $('#m-rec').onclick=async()=>{
   if (M.rec) return stopMic();
@@ -827,6 +941,7 @@ $('#m-rec').onclick=async()=>{
   M.tbuf=new Float32Array(M.an.fftSize); M.fbuf=new Float32Array(M.an.frequencyBinCount);
   M.proc=M.ctx.createScriptProcessor(4096,1,1);
   M.chunks=[]; M.levels=[]; M.data=null; M.psd=null; M.spec=null; M.iso=new Date().toISOString();
+  micCanvases().forEach(c=>c._zoom=null);
   let samples=0;
   M.proc.onaudioprocess=e=>{ if (!M.rec) return; const d=e.inputBuffer.getChannelData(0); M.chunks.push(new Float32Array(d));
     let ss=0, pk=0; for (let i=0;i<d.length;i++){ const v=d[i]; ss+=v*v; const a=v<0?-v:v; if (a>pk) pk=a; }
@@ -843,7 +958,7 @@ function stopMic(){
   M.stream?.getTracks().forEach(t=>t.stop()); M.ctx?.close(); M.ctx=null;
   let len=0; for (const c of M.chunks) len+=c.length;
   const out=new Float32Array(len); let o=0; for (const c of M.chunks){ out.set(c,o); o+=c.length; }
-  M.data=out; M.chunks=[]; updateWake();
+  M.data=out; M.chunks=[]; micCanvases().forEach(c=>c._zoom=null); updateWake();
   $('#m-info').textContent=`${(len/M.fs).toFixed(1)} s · ${M.fs} Hz · computing…`;
   $('#m-wavetitle').textContent='Waveform · recording'; $('#m-spectitle').textContent='Power spectral density · Welch';
   setTimeout(()=>{ computeMic(); drawMicStatic(); $('#m-info').textContent=`${(len/M.fs).toFixed(1)} s · ${M.fs} Hz · ${len.toLocaleString()} samples`; }, 30);
@@ -859,7 +974,7 @@ function drawMicStatic(){
   const r=M.psd;
   if (r){ const db=new Float64Array(r.P.length); for (let i=0;i<db.length;i++) db[i]=10*Math.log10(r.P[i]+1e-30);
     r.db=db;
-    plot($('#m-psd'),{ series:[{ x:r.f, y:db, color:COL.a }], logX:$('#m-xlog').value==='log', ylabel:r.p.scaling==='density'?'dB re FS²/Hz':'dB re FS²', xlabel:'Hz' });
+    plot($('#m-psd'),{ series:[{ x:r.f, y:db, color:COL.a }], logX:$('#m-xlog').value==='log', peak:mPeak(), ylabel:r.p.scaling==='density'?'dB re FS²/Hz':'dB re FS²', xlabel:'Hz' });
     let bi=1; for (let i=1;i<db.length;i++) if (db[i]>db[bi]) bi=i;
     $('#m-meta').innerHTML=`fs <b>${M.fs} Hz</b> · nperseg ${r.N} · Δf <b>${r.df.toPrecision(3)} Hz</b> · averages K=${r.K} · peak <b>${r.f[bi].toFixed(1)} Hz</b> · RMS ${(20*Math.log10(std(M.data)+1e-12)).toFixed(1)} dBFS`+(r.reduced?' <span class="warn">· nperseg was reduced because the recording is short</span>':'');
   }
@@ -869,7 +984,7 @@ function drawMicLive(){
   M.an.getFloatTimeDomainData(M.tbuf); M.an.getFloatFrequencyData(M.fbuf);
   plot($('#m-wave'),{ series:[{ y:M.tbuf, dx:1000/M.fs, color:COL.a, width:1.2 }], ymin:-1, ymax:1, ylabel:'FS', xlabel:'ms' });
   const n=M.fbuf.length, f=new Float32Array(n); for (let i=0;i<n;i++) f[i]=i*M.fs/M.an.fftSize;
-  plot($('#m-psd'),{ series:[{ x:f, y:M.fbuf, color:COL.a }], logX:$('#m-xlog').value==='log', ymin:-140, ymax:-10, ylabel:'dB', xlabel:'Hz' });
+  plot($('#m-psd'),{ series:[{ x:f, y:M.fbuf, color:COL.a }], logX:$('#m-xlog').value==='log', peak:mPeak(), ymin:-140, ymax:-10, ylabel:'dB', xlabel:'Hz' });
   const pct=clamp((M.db+80)/80,0,1)*100, mt=$('#m-meter'); mt.style.width=pct+'%'; mt.style.setProperty('--w', mt.parentElement.clientWidth+'px');
   $('#m-db').textContent=Number.isFinite(M.db)?M.db.toFixed(1):'—';
 }
