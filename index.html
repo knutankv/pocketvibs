@@ -66,6 +66,9 @@ canvas{display:block;width:100%;touch-action:pan-y}
 .chip.on::before{background:var(--c)}
 .params{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
 .params label{display:flex;flex-direction:column;gap:4px;font-size:10.5px;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.params input{width:100%;font:inherit;font-size:16px;color:var(--text);background:rgba(255,255,255,.07);
+  border:1px solid var(--line);border-radius:10px;padding:7px 10px;font-variant-numeric:tabular-nums}
+.params input.bad{border-color:var(--warn)}
 select{-webkit-appearance:none;appearance:none;width:100%;font:inherit;font-size:16px;color:var(--text);
   background:rgba(255,255,255,.07) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238a93a6' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 9px center/10px;
   border:1px solid var(--line);border-radius:10px;padding:7px 24px 7px 10px}
@@ -267,9 +270,28 @@ details p,details li{line-height:1.55}
           <div class="big" id="m-timer">00:00.0</div>
           <div class="sub" id="m-info">Tap to record audio</div>
         </div>
-        <div style="text-align:right"><div class="big" id="m-db" style="font-size:22px">—</div><div class="sub">dBFS</div></div>
+        <div style="text-align:right"><div class="big" id="m-db" style="font-size:22px">—</div><div class="sub" id="m-dbunit">dBFS</div></div>
       </div>
       <div class="meter"><i id="m-meter"></i></div>
+    </div>
+
+    <div class="card">
+      <h2>Sound level
+        <span class="row" style="gap:6px">
+          <span class="seg"><button id="m-band" aria-pressed="false">Band</button></span>
+          <span class="seg" id="m-wt"><button data-v="z" class="on">Z (flat)</button><button data-v="a">A</button></span>
+        </span>
+      </h2>
+      <div class="readouts" style="margin-top:0">
+        <div class="ro"><div class="k">Total</div><div class="v" id="m-ltot">—</div></div>
+        <div class="ro" id="m-bandro" style="opacity:.4"><div class="k" id="m-bandk">Band</div><div class="v" id="m-lband">—</div></div>
+      </div>
+      <div class="params">
+        <label>Band low (Hz)<input type="number" id="m-f1" min="0" step="any" inputmode="decimal" value="300"></label>
+        <label>Band high (Hz)<input type="number" id="m-f2" min="0" step="any" inputmode="decimal" value="3400"></label>
+        <label>Calibration (dB)<input type="number" id="m-cal" step="any" inputmode="decimal" value="0"></label>
+      </div>
+      <div class="meta" id="m-lmeta">Levels come from integrating the power spectrum (DC excluded), with optional A-weighting (IEC 61672). Live values use a 2048-point FFT and Fast (125 ms) time weighting. After recording they show the Leq of the whole recording, taken from the Welch PSD. Calibration is a dB offset added to dBFS. Set it to get dB SPL, for example from a reference meter. If it is 0 the levels are in dBFS.</div>
     </div>
 
     <div class="card">
@@ -306,7 +328,7 @@ details p,details li{line-height:1.55}
         <button class="btn" id="m-psdcsv">PSD CSV</button>
         <button class="btn" id="m-lvlcsv">Level CSV</button>
       </div>
-      <div class="meta">Levels are in dBFS, relative to digital full scale. They are not calibrated sound pressure. Echo cancellation, noise suppression and auto gain are turned off where iOS allows it.</div>
+      <div class="meta">The CSVs give levels in dBFS, relative to digital full scale. The Level CSV also has A-weighted and band levels, but no calibration offset is applied. Echo cancellation, noise suppression and auto gain are turned off where iOS allows it.</div>
     </div>
   </section>
 </main>
@@ -396,7 +418,7 @@ function welch(x, fs, p){
     for (let k=0;k<nf;k++) P[k]+=re[k]*re[k]+im[k]*im[k]; K++; }
   const f=new Float64Array(nf);
   for (let k=0;k<nf;k++){ P[k]*=scale/K; if (k>0 && k<N/2) P[k]*=2; f[k]=k*fs/N; }
-  return { f, P, K, N, df:fs/N, reduced };
+  return { f, P, K, N, df:fs/N, reduced, toDensity:p.scaling==='density'?1:s1*s1/(fs*s2) };
 }
 function stft(x, fs, p, maxCols=420){
   let N=p.nperseg; if (x.length<N) N=pow2floor(x.length); if (N<16) return null;
@@ -490,6 +512,11 @@ function plot(cv, o){
     ctx.beginPath(); ctx.moveTo(L,p); ctx.lineTo(L+pw,p); ctx.stroke(); ctx.fillText(fmt(v),L-6,p); }
   ctx.strokeStyle=FRAME; ctx.strokeRect(L+.5,T+.5,pw-1,ph-1);
   ctx.save(); ctx.beginPath(); ctx.rect(L,T,pw,ph); ctx.clip(); ctx.lineJoin='round';
+  if (o.band){ const [b0,b1]=o.band, xa=clamp(lx&&!(b0>0)?L:PX(b0),L,L+pw), xb=clamp(PX(b1),L,L+pw);
+    if (xb>xa){ ctx.fillStyle='rgba(90,169,255,.10)'; ctx.fillRect(xa,T,xb-xa,ph);
+      ctx.strokeStyle='rgba(90,169,255,.55)'; ctx.setLineDash([4,3]); ctx.beginPath();
+      for (const p of [xa,xb]) if (p>L+.5 && p<L+pw-.5){ ctx.moveTo(Math.round(p)+.5,T); ctx.lineTo(Math.round(p)+.5,T+ph); }
+      ctx.stroke(); ctx.setLineDash([]); } }
   for (const s of o.series){
     const [i0,i1]=rng(s), dense=!lx && (i1-i0)>pw*3;
     ctx.strokeStyle=s.color; ctx.lineWidth=s.width||1.4; ctx.beginPath();
@@ -950,6 +977,63 @@ $('#m-xlog').addEventListener('change',()=>{ if(!M.rec) drawMicStatic(); });
 const mPeak=toggle('m-peak',()=>{ if(!M.rec) drawMicStatic(); });
 const micCanvases=()=>['#m-wave','#m-psd','#m-spec'].map(s=>$(s));
 
+/* ---- sound level: integrate the PSD over a band, optionally A-weighted ---- */
+function aWeight2(f){ // IEC 61672 A-weighting as a power gain (0 dB at 1 kHz)
+  const f2=f*f, c1=20.598997**2, c2=107.65265**2, c3=737.86223**2, c4=12194.217**2;
+  const ra=c4*f2*f2/((f2+c1)*Math.sqrt((f2+c2)*(f2+c3))*(f2+c4));
+  return ra*ra*1.5848931924611136;
+}
+// Mean square (FS²) of a one-sided PSD between lo and hi (whole spectrum if no band), DC excluded.
+function bandPower(w, band, aw){
+  const { f, P }=w, df=f[1]-f[0], lo=band?band[0]:0, hi=band?band[1]:Infinity; let s=0;
+  for (let k=1;k<f.length;k++){ const fk=f[k]; if (fk<lo || fk>hi) continue; s+=P[k]*(aw?aWeight2(fk):1); }
+  return s*df*(w.toDensity||1);
+}
+const LVKEY='pv-level';
+try{ const s=JSON.parse(localStorage.getItem(LVKEY)||'{}');
+  for (const k of ['f1','f2','cal']) if (s[k]!=null) $('#m-'+k).value=s[k];
+  if (s.wt) $$('#m-wt button').forEach(b=>b.classList.toggle('on',b.dataset.v===s.wt));
+  if (s.band){ $('#m-band').classList.add('on'); $('#m-band').setAttribute('aria-pressed','true'); }
+}catch(_){}
+const onLevelOpts=()=>{
+  try{ localStorage.setItem(LVKEY, JSON.stringify({ f1:$('#m-f1').value, f2:$('#m-f2').value, cal:$('#m-cal').value, wt:mWt(), band:mBand() })); }catch(_){}
+  M.lv=null; if (!M.rec) drawMicStatic();
+};
+const mWt=seg('m-wt',onLevelOpts), mBand=toggle('m-band',onLevelOpts);
+['f1','f2','cal'].forEach(k=>$('#m-'+k).addEventListener('input',onLevelOpts));
+function bandEdges(){
+  const a=parseFloat($('#m-f1').value), b=parseFloat($('#m-f2').value), ok=a>=0 && b>a;
+  $('#m-f1').classList.toggle('bad',!ok); $('#m-f2').classList.toggle('bad',!ok);
+  return ok?[a,b]:null;
+}
+function levelOpts(){
+  const a=mWt()==='a', cal=parseFloat($('#m-cal').value)||0;
+  return { a, cal, on:mBand(), band:mBand()?bandEdges():null,
+    unit:cal ? (a?'dB(A)':'dB') : (a?'dB(A)FS':'dBFS') };
+}
+// msTot/msBand in FS²; kind is 'live' or 'Leq'
+function showLevels(msTot, msBand, kind){
+  const o=levelOpts(), dB=ms=>ms>0?10*Math.log10(ms):NaN, f=v=>Number.isFinite(v)?v.toFixed(1):'—';
+  const tot=dB(msTot), band=dB(msBand);
+  $('#m-ltot').innerHTML=f(tot+o.cal)+`<small>${o.unit}</small>`;
+  $('#m-lband').innerHTML=(o.band?f(band+o.cal):'—')+`<small>${o.unit}</small>`;
+  $('#m-ltot').previousElementSibling.textContent='Total'+(kind?' · '+kind:'');
+  $('#m-bandk').textContent=o.on ? (o.band?`Band ${fmt(o.band[0])}–${fmt(o.band[1])} Hz`:'Band · invalid range') : 'Band · off';
+  $('#m-bandro').style.opacity=o.band?1:.4;
+  $('#m-db').textContent=f(tot+o.cal); $('#m-dbunit').textContent=o.unit;
+  const pct=Number.isFinite(tot)?clamp((tot+80)/80,0,1)*100:0, mt=$('#m-meter');
+  mt.style.width=pct+'%'; mt.style.setProperty('--w', mt.parentElement.clientWidth+'px');
+}
+const LIVEP={ nperseg:2048, overlap:0, window:'hann', detrend:'constant', scaling:'density' };
+function liveLevels(now){
+  const o=levelOpts(), w=welch(M.tbuf,M.fs,LIVEP); if (!w) return;
+  const tot=bandPower(w,null,o.a), band=o.band?bandPower(w,o.band,o.a):0;
+  if (!M.lv) M.lv={ t:now, tot, band };
+  else { const k=1-Math.exp(-Math.max(0,now-M.lv.t)/125); // Fast time weighting, τ = 125 ms
+    M.lv.tot+=(tot-M.lv.tot)*k; M.lv.band+=(band-M.lv.band)*k; M.lv.t=now; }
+  showLevels(M.lv.tot, M.lv.band, 'live');
+}
+
 $('#m-rec').onclick=async()=>{
   if (M.rec) return stopMic();
   if (!navigator.mediaDevices?.getUserMedia) return toast('Microphone not available. HTTPS is needed.');
@@ -962,8 +1046,7 @@ $('#m-rec').onclick=async()=>{
   M.tbuf=new Float32Array(M.an.fftSize); M.fbuf=new Float32Array(M.an.frequencyBinCount);
   M.proc=M.ctx.createScriptProcessor(4096,1,1);
   M.chunks=[]; M.levels=[]; M.data=null; M.psd=null; M.spec=null; M.iso=new Date().toISOString();
-  micCanvases().forEach(c=>c._zoom=c._yzoom=null);
-  let samples=0;
+  micCanvases().forEach(c=>c._zoom=c._yzoom=null); M.lv=null;
   M.proc.onaudioprocess=e=>{ if (!M.rec) return; const d=e.inputBuffer.getChannelData(0); M.chunks.push(new Float32Array(d));
     let ss=0, pk=0; for (let i=0;i<d.length;i++){ const v=d[i]; ss+=v*v; const a=v<0?-v:v; if (a>pk) pk=a; }
     const rms=Math.sqrt(ss/d.length); M.db=20*Math.log10(rms+1e-12);
@@ -990,24 +1073,24 @@ function computeMic(){
   M.spec=stft(M.data,M.fs,p);
 }
 function drawMicStatic(){
-  if (!M.data){ plot($('#m-wave'),{series:[],empty:'Press record'}); plot($('#m-psd'),{series:[],empty:'Press record'}); heat($('#m-spec'),null); return; }
+  if (!M.data){ plot($('#m-wave'),{series:[],empty:'Press record'}); plot($('#m-psd'),{series:[],empty:'Press record'}); heat($('#m-spec'),null); showLevels(NaN,NaN,''); return; }
   plot($('#m-wave'),{ series:[{ y:M.data, dx:1/M.fs, color:COL.a, width:1 }], ylabel:'FS', xlabel:'s' });
-  const r=M.psd;
+  const r=M.psd, lo=levelOpts();
   if (r){ const db=new Float64Array(r.P.length); for (let i=0;i<db.length;i++) db[i]=10*Math.log10(r.P[i]+1e-30);
     r.db=db;
-    plot($('#m-psd'),{ series:[{ x:r.f, y:db, color:COL.a }], logX:$('#m-xlog').value==='log', peak:mPeak(), ylabel:r.p.scaling==='density'?'dB re FS²/Hz':'dB re FS²', xlabel:'Hz' });
+    plot($('#m-psd'),{ series:[{ x:r.f, y:db, color:COL.a }], logX:$('#m-xlog').value==='log', peak:mPeak(), band:lo.band, ylabel:r.p.scaling==='density'?'dB re FS²/Hz':'dB re FS²', xlabel:'Hz' });
+    showLevels(bandPower(r,null,lo.a), lo.band?bandPower(r,lo.band,lo.a):0, 'Leq');
     let bi=1; for (let i=1;i<db.length;i++) if (db[i]>db[bi]) bi=i;
     $('#m-meta').innerHTML=`fs <b>${M.fs} Hz</b> · nperseg ${r.N} · Δf <b>${r.df.toPrecision(3)} Hz</b> · averages K=${r.K} · peak <b>${r.f[bi].toFixed(1)} Hz</b> · RMS ${(20*Math.log10(std(M.data)+1e-12)).toFixed(1)} dBFS`+(r.reduced?' <span class="warn">· nperseg was reduced because the recording is short</span>':'');
   }
   heat($('#m-spec'),M.spec,90);
 }
-function drawMicLive(){
+function drawMicLive(now){
   M.an.getFloatTimeDomainData(M.tbuf); M.an.getFloatFrequencyData(M.fbuf);
   plot($('#m-wave'),{ series:[{ y:M.tbuf, dx:1000/M.fs, color:COL.a, width:1.2 }], ymin:-1, ymax:1, ylabel:'FS', xlabel:'ms' });
   const n=M.fbuf.length, f=new Float32Array(n); for (let i=0;i<n;i++) f[i]=i*M.fs/M.an.fftSize;
-  plot($('#m-psd'),{ series:[{ x:f, y:M.fbuf, color:COL.a }], logX:$('#m-xlog').value==='log', peak:mPeak(), ymin:-140, ymax:-10, ylabel:'dB', xlabel:'Hz' });
-  const pct=clamp((M.db+80)/80,0,1)*100, mt=$('#m-meter'); mt.style.width=pct+'%'; mt.style.setProperty('--w', mt.parentElement.clientWidth+'px');
-  $('#m-db').textContent=Number.isFinite(M.db)?M.db.toFixed(1):'—';
+  plot($('#m-psd'),{ series:[{ x:f, y:M.fbuf, color:COL.a }], logX:$('#m-xlog').value==='log', peak:mPeak(), band:levelOpts().band, ymin:-140, ymax:-10, ylabel:'dB', xlabel:'Hz' });
+  liveLevels(now);
 }
 let lastMicSpec=0;
 function drawMicLiveSpec(now){ // rolling spectrogram of last ~10 s during recording
@@ -1040,7 +1123,16 @@ $('#m-psdcsv').onclick=()=>{
 };
 $('#m-lvlcsv').onclick=()=>{
   if (!M.levels.length) return toast('Nothing recorded yet');
-  let s='time_s,rms_dbfs,peak_dbfs\n'; for (const [t,r,p] of M.levels) s+=t.toFixed(4)+','+r.toFixed(2)+','+p.toFixed(2)+'\n';
+  const o=levelOpts(), x=M.data, B=4096, P={ nperseg:B, overlap:0, window:'hann', detrend:'constant', scaling:'density' };
+  const d=ms=>(ms>0?10*Math.log10(ms):-Infinity).toFixed(2);
+  let s='';
+  if (x) s+=`# Spectral levels per ${B}-sample block (Hann, DC excluded) | A = IEC 61672 A-weighting | band=${o.band?o.band[0]+'-'+o.band[1]+' Hz':'off'} | values in dBFS; add calibration ${o.cal} dB for dB SPL | start=${M.iso}\n`;
+  s+='time_s,rms_dbfs,peak_dbfs'+(x?',rms_dbAfs'+(o.band?',band_dbfs,band_dbAfs':''):'')+'\n';
+  for (const [t,r,p] of M.levels){ s+=t.toFixed(4)+','+r.toFixed(2)+','+p.toFixed(2);
+    if (x){ const st=Math.round(t*M.fs), w=welch(x.subarray(st,st+B),M.fs,P);
+      s+=','+(w?d(bandPower(w,null,true)):'');
+      if (o.band) s+=','+(w?d(bandPower(w,o.band,false)):'')+','+(w?d(bandPower(w,o.band,true)):''); }
+    s+='\n'; }
   saveFile(`mic_levels_${stamp()}.csv`,[s],'text/csv');
 };
 
@@ -1072,7 +1164,7 @@ function frame(now){
   } else if (active==='tilt'){
     drawTiltReadouts(drawBubble());
     if (T.rec && now-lastT>150){ lastT=now; drawTiltTrace(); }
-  } else if (active==='mic' && M.rec){ drawMicLive(); drawMicLiveSpec(now); }
+  } else if (active==='mic' && M.rec){ drawMicLive(now); drawMicLiveSpec(now); }
 }
 let rzT; addEventListener('resize',()=>{ clearTimeout(rzT); rzT=setTimeout(redrawActive,120); });
 requestAnimationFrame(()=>{ redrawActive(); requestAnimationFrame(frame); });
